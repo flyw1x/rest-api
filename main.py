@@ -1,119 +1,129 @@
 import os
-from flask import Flask, request
-from flask_restful import Api, Resource
-from flasgger import Swagger
+from datetime import datetime, timedelta, timezone
+from typing import Optional, List
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel, Field
 from pymongo import MongoClient
-from repository.books import BookRepository
+import jwt
+from passlib.context import CryptContext
 
-app = Flask(__name__)
-api = Api(app)
+# Конфігурація безпеки
+SECRET_KEY = os.getenv("SECRET_KEY", "super_secret_key_change_me_in_production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-app.config["SWAGGER"] = {
-    "title": "Library Flask NoSQL API",
-    "uiversion": 3
-}
-swagger = Swagger(app)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
+app = FastAPI(title="Library FastAPI NoSQL Security API")
+
+# Підключення до MongoDB
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo_admin:password@mongo_db:27017")
 client = MongoClient(MONGO_URL)
 db = client["library_db"]
-repo = BookRepository(db)
 
-class BookListResource(Resource):
-    def get(self):
-        """
-        Get books with Limit-Offset pagination
-        ---
-        parameters:
-          - name: limit
-            in: query
-            type: integer
-            default: 10
-          - name: offset
-            in: query
-            type: integer
-            default: 0
-        responses:
-          200:
-            description: Success
-        """
-        limit = request.args.get("limit", default=10, type=int)
-        offset = request.args.get("offset", default=0, type=int)
-        return repo.get_all(limit, offset), 200
+# Pydantic моделі
+class UserRegister(BaseModel):
+    username: str
+    password: str
 
-    def post(self):
-        """
-        Create a new book
-        ---
-        consumes:
-          - application/json
-        parameters:
-          - name: body
-            in: body
-            required: true
-            schema:
-              id: Book
-              required:
-                - title
-                - release_year
-                - author_id
-              properties:
-                title:
-                  type: string
-                  default: "Flask Architecture"
-                release_year:
-                  type: integer
-                  default: 2026
-                author_id:
-                  type: integer
-                  default: 1
-        responses:
-          201:
-            description: Created
-        """
-        data = request.get_json()
-        return repo.create(data), 201
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
 
-class BookResource(Resource):
-    def get(self, book_id):
-        """
-        Get a single book by ID
-        ---
-        parameters:
-          - name: book_id
-            in: path
-            type: string
-            required: true
-        responses:
-          200:
-            description: Success
-          404:
-            description: Not Found
-        """
-        book = repo.get_by_id(book_id)
-        if not book: return {"message": "Not found"}, 404
-        return book, 200
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
-    def delete(self, book_id):
-        """
-        Delete a book by ID
-        ---
-        parameters:
-          - name: book_id
-            in: path
-            type: string
-            required: true
-        responses:
-          204:
-            description: Deleted
-          404:
-            description: Not Found
-        """
-        if not repo.delete(book_id): return {"message": "Not found"}, 404
-        return "", 204
+class BookModel(BaseModel):
+    title: str
+    release_year: int
+    author_id: int
 
-api.add_resource(BookListResource, "/books")
-api.add_resource(BookResource, "/books/<string:book_id>")
+# Утиліти для токенів та паролів
+def create_token(data: dict, expires_delta: timedelta) -> str:
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + expires_delta
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+def verify_token(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload if payload.get("type") else None
+    except jwt.PyJWTError:
+        return None
+
+# Залежність для захисту ендпоінтів
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    payload = verify_token(token)
+    if not payload or payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload["sub"]
+
+# --- AUTH ENDPOINTS ---
+
+@app.post("/auth/register", status_code=201)
+def register(user: UserRegister):
+    if db.users.find_one({"username": user.username}):
+        raise HTTPException(status_code=400, detail="Username already registered")
+    hashed_password = pwd_context.hash(user.password)
+    db.users.insert_one({"username": user.username, "password": hashed_password})
+    return {"message": "User registered successfully"}
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(user: UserRegister):
+    db_user = db.users.find_one({"username": user.username})
+    if not db_user or not pwd_context.verify(user.password, db_user["password"]):
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    
+    access_token = create_token({"sub": user.username, "type": "access"}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    refresh_token = create_token({"sub": user.username, "type": "refresh"}, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    
+    # Зберігаємо рефреш токен у базі, щоб контролювати сесії
+    db.refresh_tokens.update_one(
+        {"username": user.username},
+        {"$set": {"refresh_token": refresh_token, "created_at": datetime.now(timezone.utc)}},
+        upsert=True
+    )
+    return {"access_token": access_token, "refresh_token": refresh_token}
+
+@app.post("/auth/refresh", response_model=TokenResponse)
+def refresh(body: RefreshRequest):
+    payload = verify_token(body.refresh_token)
+    if not payload or payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    
+    username = payload["sub"]
+    saved_token = db.refresh_tokens.find_one({"username": username, "refresh_token": body.refresh_token})
+    if not saved_token:
+        raise HTTPException(status_code=401, detail="Refresh token not recognized or revoked")
+    
+    new_access = create_token({"sub": username, "type": "access"}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    new_refresh = create_token({"sub": username, "type": "refresh"}, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    
+    db.refresh_tokens.update_one({"username": username}, {"$set": {"refresh_token": new_refresh}})
+    return {"access_token": new_access, "refresh_token": new_refresh}
+
+# --- PROTECTED BOOKS ENDPOINTS ---
+
+@app.get("/books")
+def get_books(limit: int = 10, offset: int = 0, current_user: str = Depends(get_current_user)):
+    cursor = db.books.find({}).skip(offset).limit(limit)
+    books = list(cursor)
+    for b in books:
+        b["_id"] = str(b["_id"])
+    return books
+
+@app.post("/books", status_code=201)
+def create_book(book: BookModel, current_user: str = Depends(get_current_user)):
+    book_data = book.model_dump()
+    result = db.books.insert_one(book_data)
+    book_data["_id"] = str(result.inserted_id)
+    return book_data

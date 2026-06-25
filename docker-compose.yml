@@ -19,11 +19,15 @@ services:
       MONGO_INITDB_ROOT_USERNAME: mongo_admin
       MONGO_INITDB_ROOT_PASSWORD: password
       MONGO_INITDB_DATABASE: library_db
-    ports:
-      - "27017:27017"
 
   redis_db:
     image: redis:7-alpine
     restart: always
+
+  prism:
+    image: stoplight/prism:4
+    command: mock /tmp/openapi.yaml --host 0.0.0.0 --port 4010
+    volumes:
+      - ./openapi.yaml:/tmp/openapi.yaml
     ports:
-      - "6379:6379"
+      - "4010:4010"

@@ -1,0 +1,36 @@
+openapi: 3.0.0
+info:
+  title: Library API Mock
+  version: 1.0.0
+paths:
+  /books:
+    get:
+      summary: List all books
+      responses:
+        '200':
+          description: A list of books
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string, example: "667a1b..."}
+                    title: {type: string, example: "The Great Gatsby"}
+    post:
+      summary: Create a book
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: {type: string}
+    parameters:
+      - name: limit
+        in: query
+        schema: {type: integer}
+      - name: offset
+        in: query
+        schema: {type: integer}

@@ -15,7 +15,6 @@ app.config["SWAGGER"] = {
 swagger = Swagger(app)
 
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo_admin:password@mongo_db:27017")
-# Використовуємо синхронний клієнт MongoClient
 client = MongoClient(MONGO_URL)
 db = client["library_db"]
 repo = BookRepository(db)
@@ -46,16 +45,28 @@ class BookListResource(Resource):
         """
         Create a new book
         ---
+        consumes:
+          - application/json
         parameters:
           - name: body
             in: body
             required: true
             schema:
-              type: object
+              id: Book
+              required:
+                - title
+                - release_year
+                - author_id
               properties:
-                title: {type: string}
-                release_year: {type: integer}
-                author_id: {type: integer}
+                title:
+                  type: string
+                  default: "Flask Architecture"
+                release_year:
+                  type: integer
+                  default: 2026
+                author_id:
+                  type: integer
+                  default: 1
         responses:
           201:
             description: Created
@@ -65,11 +76,39 @@ class BookListResource(Resource):
 
 class BookResource(Resource):
     def get(self, book_id):
+        """
+        Get a single book by ID
+        ---
+        parameters:
+          - name: book_id
+            in: path
+            type: string
+            required: true
+        responses:
+          200:
+            description: Success
+          404:
+            description: Not Found
+        """
         book = repo.get_by_id(book_id)
         if not book: return {"message": "Not found"}, 404
         return book, 200
 
     def delete(self, book_id):
+        """
+        Delete a book by ID
+        ---
+        parameters:
+          - name: book_id
+            in: path
+            type: string
+            required: true
+        responses:
+          204:
+            description: Deleted
+          404:
+            description: Not Found
+        """
         if not repo.delete(book_id): return {"message": "Not found"}, 404
         return "", 204
 

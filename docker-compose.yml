@@ -1,35 +1,28 @@
-services:
-  db:
-    image: postgres:15-alpine
-    container_name: library_db
-    restart: always
-    environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: library
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+version: "3.8"
 
+volumes:
+  mongo_data:
+
+services:
   web:
-    image: python:3.11-slim
-    container_name: library_api_app
-    restart: always
+    build: .
     ports:
       - "8000:8000"
     volumes:
       - .:/app
-    working_dir: /app
     environment:
-      DATABASE_URL: "postgresql+asyncpg://user:password@db:5432/library"
-    # Оця команда примусово оновить pip, поставить УСІ бібліотеки і запустить додаток!
-    command: >
-      sh -c "pip install --upgrade pip && 
-             pip install fastapi uvicorn pydantic sqlalchemy asyncpg httpx pytest pytest-asyncio && 
-             python -m uvicorn main:app --host 0.0.0.0 --port 8000"
+      - MONGO_URL=mongodb://mongo_admin:password@mongo_db:27017
     depends_on:
-      - db
+      - mongo_db
 
-volumes:
-  postgres_data:
+  mongo_db:
+    image: mongo:latest
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: mongo_admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: library_db
+    volumes:
+      - mongo_data:/var/lib/mongodb/data
+    ports:
+      - "27017:27017"

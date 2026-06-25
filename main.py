@@ -2,7 +2,7 @@ import os
 from flask import Flask, request
 from flask_restful import Api, Resource
 from flasgger import Swagger
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import MongoClient
 from repository.books import BookRepository
 
 app = Flask(__name__)
@@ -15,14 +15,15 @@ app.config["SWAGGER"] = {
 swagger = Swagger(app)
 
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo_admin:password@mongo_db:27017")
-client = AsyncIOMotorClient(MONGO_URL)
+# Використовуємо синхронний клієнт MongoClient
+client = MongoClient(MONGO_URL)
 db = client["library_db"]
 repo = BookRepository(db)
 
 class BookListResource(Resource):
     def get(self):
         """
-        Отримати список книг з пагінацією Limit-Offset
+        Get books with Limit-Offset pagination
         ---
         parameters:
           - name: limit
@@ -35,7 +36,7 @@ class BookListResource(Resource):
             default: 0
         responses:
           200:
-            description: Успішно
+            description: Success
         """
         limit = request.args.get("limit", default=10, type=int)
         offset = request.args.get("offset", default=0, type=int)
@@ -43,7 +44,7 @@ class BookListResource(Resource):
 
     def post(self):
         """
-        Створити книгу
+        Create a new book
         ---
         parameters:
           - name: body
@@ -57,7 +58,7 @@ class BookListResource(Resource):
                 author_id: {type: integer}
         responses:
           201:
-            description: Створено
+            description: Created
         """
         data = request.get_json()
         return repo.create(data), 201

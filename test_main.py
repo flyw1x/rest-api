@@ -1,25 +1,63 @@
-import pytest
-from main import app
+from fastapi.testclient import TestClient
+from unittest.mock import patch
+import jwt
+from datetime import datetime, timedelta, timezone
+from main import app, SECRET_KEY, ALGORITHM
 
-@pytest.fixture
-def client():
-    app.config["TESTING"] = True
-    with app.test_client() as client: yield client
+client = TestClient(app)
 
-def test_flask_nosql_crud_and_pagination(client):
-    book = {"title": "Flask Architecture", "release_year": 2026, "author_id": 77}
-    res = client.post("/books", json=book)
-    assert res.status_code == 201
-    created = res.get_json()
-    assert "_id" in created
+def generate_mock_token(username: str):
+    payload = {
+        "sub": username,
+        "type": "access",
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=15)
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-    res = client.get("/books?limit=1&offset=0")
-    assert res.status_code == 200
-    assert len(res.get_json()) == 1
+# ==================== ANONYMOUS USER TESTS ====================
 
-    book_id = created["_id"]
-    res = client.get(f"/books/{book_id}")
-    assert res.status_code == 200
+@patch("main.redis_client.incr")
+@patch("main.redis_client.expire")
+def test_anonymous_under_limit(mock_expire, mock_incr):
+    # Симулюємо 1-й запит аноніма (ліміт 2)
+    mock_incr.return_value = 1
+    
+    response = client.get("/books")
+    assert response.status_code == 200
+    mock_incr.assert_called_once()
+    mock_expire.assert_called_once()
 
-    res = client.delete(f"/books/{book_id}")
-    assert res.status_code == 204
+@patch("main.redis_client.incr")
+def test_anonymous_limit_exceeded(mock_incr):
+    # Симулюємо 3-й запит аноніма (перевищення ліміту 2)
+    mock_incr.return_value = 3
+    
+    response = client.get("/books")
+    assert response.status_code == 429
+    assert response.json()["detail"] == "Too many requests. Rate limit exceeded."
+
+
+# ==================== AUTHORIZED USER TESTS ====================
+
+@patch("main.redis_client.incr")
+@patch("main.redis_client.expire")
+def test_authorized_under_limit(mock_expire, mock_incr):
+    # Симулюємо 5-й запит авторизованого юзера (ліміт 10)
+    mock_incr.return_value = 5
+    token = generate_mock_token("test_user")
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    response = client.get("/books", headers=headers)
+    assert response.status_code == 200
+    mock_incr.assert_called_once()
+
+@patch("main.redis_client.incr")
+def test_authorized_limit_exceeded(mock_incr):
+    # Симулюємо 11-й запит авторизованого юзера (перевищення ліміту 10)
+    mock_incr.return_value = 11
+    token = generate_mock_token("test_user")
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    response = client.get("/books", headers=headers)
+    assert response.status_code == 429
+    assert response.json()["detail"] == "Too many requests. Rate limit exceeded."
